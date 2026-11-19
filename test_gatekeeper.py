@@ -34,6 +34,11 @@ cases = [
     ("Rule 7 – order at limit",  "enrolled",     "place_order", 5000,   "ALLOW",       7),
     ("Rule 7 – refund below",    "enrolled",     "refund",      4999,   "ALLOW",       7),
     ("Rule 7 – small order",     "enrolled",     "place_order", 500,    "ALLOW",       7),
+    # edge cases: first matching rule wins
+    ("Edge – revoked + bad act", "revoked",      "buy_now",     0,      "BLOCK",       1),
+    ("Edge – unreg + bad act",   "unregistered", "buy_now",     0,      "BLOCK",       1),
+    ("Edge – negative order",    "enrolled",     "place_order", -50,    "BLOCK",       1),
+    ("Edge – revoked return",    "revoked",      "return",      0,      "BLOCK",       3),
 ]
 
 all_passed = True

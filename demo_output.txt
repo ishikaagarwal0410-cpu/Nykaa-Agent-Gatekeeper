@@ -1,0 +1,147 @@
+
+$ python gatekeeper.py register cust_01 agent_A
+  [register] cust_01 / agent_A  enrolled  @ 2026-11-19 12:41:19
+
+$ python gatekeeper.py decide cust_01 agent_A view_order
+
+  Customer     : cust_01
+  Agent        : agent_A  [enrolled]
+  Action       : view_order
+
+  ► Decision   : ALLOW
+    Rule       : #4
+    Reason     : Registered agents may view orders - safe read-only action.
+
+
+$ python gatekeeper.py decide cust_01 agent_A place_order 4500
+
+  Customer     : cust_01
+  Agent        : agent_A  [enrolled]
+  Action       : place_order
+  Amount       : Rs 4,500
+
+  ► Decision   : ALLOW
+    Rule       : #7
+    Reason     : place_order of Rs 4,500 is within the Rs 5,000 limit - allowed.
+
+
+$ python gatekeeper.py decide cust_01 agent_A place_order 5000
+
+  Customer     : cust_01
+  Agent        : agent_A  [enrolled]
+  Action       : place_order
+  Amount       : Rs 5,000
+
+  ► Decision   : ALLOW
+    Rule       : #7
+    Reason     : place_order of Rs 5,000 is within the Rs 5,000 limit - allowed.
+
+
+$ python gatekeeper.py decide cust_01 agent_A place_order 7000
+
+  Customer     : cust_01
+  Agent        : agent_A  [enrolled]
+  Action       : place_order
+  Amount       : Rs 7,000
+
+  ► Decision   : ASK CUSTOMER
+    Rule       : #6
+    Reason     : place_order of Rs 7,000 exceeds the Rs 5,000 limit - customer confirmation required.
+
+
+$ python gatekeeper.py decide cust_01 agent_A return
+
+  Customer     : cust_01
+  Agent        : agent_A  [enrolled]
+  Action       : return
+
+  ► Decision   : ASK CUSTOMER
+    Rule       : #5
+    Reason     : Return (simulated 15-day policy) - customer confirmation required.
+
+
+$ python gatekeeper.py decide cust_01 agent_A refund 4999
+
+  Customer     : cust_01
+  Agent        : agent_A  [enrolled]
+  Action       : refund
+  Amount       : Rs 4,999
+
+  ► Decision   : ALLOW
+    Rule       : #7
+    Reason     : refund of Rs 4,999 is within the Rs 5,000 limit - allowed.
+
+
+$ python gatekeeper.py decide cust_01 agent_A refund 6000
+
+  Customer     : cust_01
+  Agent        : agent_A  [enrolled]
+  Action       : refund
+  Amount       : Rs 6,000
+
+  ► Decision   : ASK CUSTOMER
+    Rule       : #6
+    Reason     : refund of Rs 6,000 exceeds the Rs 5,000 limit - customer confirmation required.
+
+
+$ python gatekeeper.py decide cust_01 agent_A place_order
+
+  Customer     : cust_01
+  Agent        : agent_A  [enrolled]
+  Action       : place_order
+  Amount       : Rs 0
+
+  ► Decision   : BLOCK
+    Rule       : #1
+    Reason     : Bad request - action 'place_order' is unknown or amount is missing / zero for an action that requires it.
+
+
+$ python gatekeeper.py revoke cust_01 agent_A
+  [revoke] cust_01 / agent_A  revoked  @ 2026-11-19 12:41:19
+
+$ python gatekeeper.py decide cust_01 agent_A view_order
+
+  Customer     : cust_01
+  Agent        : agent_A  [revoked]
+  Action       : view_order
+
+  ► Decision   : BLOCK
+    Rule       : #3
+    Reason     : Agent has been revoked - access denied for all actions, even harmless ones, until the customer re-registers it.
+
+
+$ python gatekeeper.py decide cust_01 agent_B view_order
+
+  Customer     : cust_01
+  Agent        : agent_B  [unregistered]
+  Action       : view_order
+
+  ► Decision   : BLOCK
+    Rule       : #2
+    Reason     : Unknown agent - agent was never registered by this customer.
+
+
+$ python gatekeeper.py log
+
+  timestamp            customer  agent    action       amount  decision      rule
+  -------------------  --------  -------  -----------  ------  ------------  ----
+  2026-11-19 12:41:19  cust_01   agent_A  view_order           ALLOW         4   
+  2026-11-19 12:41:19  cust_01   agent_A  place_order  4500    ALLOW         7   
+  2026-11-19 12:41:19  cust_01   agent_A  place_order  5000    ALLOW         7   
+  2026-11-19 12:41:19  cust_01   agent_A  place_order  7000    ASK CUSTOMER  6   
+  2026-11-19 12:41:19  cust_01   agent_A  return               ASK CUSTOMER  5   
+  2026-11-19 12:41:19  cust_01   agent_A  refund       4999    ALLOW         7   
+  2026-11-19 12:41:19  cust_01   agent_A  refund       6000    ASK CUSTOMER  6   
+  2026-11-19 12:41:19  cust_01   agent_A  place_order          BLOCK         1   
+  2026-11-19 12:41:19  cust_01   agent_A  view_order           BLOCK         3   
+  2026-11-19 12:41:19  cust_01   agent_B  view_order           BLOCK         2   
+
+  10 record(s) in /tmp/demo/audit_log.csv
+
+$ python gatekeeper.py agents
+
+  customer  agent    status   enrolled_at          revoked_at         
+  --------  -------  -------  -------------------  -------------------
+  cust_01   agent_A  revoked  2026-11-19 12:41:19  2026-11-19 12:41:19
+
+  1 agent(s) in /tmp/demo/agents.json

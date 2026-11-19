@@ -1,0 +1,9 @@
+{
+  "cust_01::agent_A": {
+    "customer": "cust_01",
+    "agent": "agent_A",
+    "status": "revoked",
+    "enrolled_at": "2026-11-19 18:16:58",
+    "revoked_at": "2026-11-19 18:16:59"
+  }
+}

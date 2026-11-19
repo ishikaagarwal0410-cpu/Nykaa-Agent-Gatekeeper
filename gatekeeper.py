@@ -1,8 +1,8 @@
 """
 gatekeeper.py – Nykaa Agent Gatekeeper
-Enrolment : PGD202564619
+Enrolment: PGD202564619
 
-Implements the 7-rule decision engine from RULES.md.
+Implements the 7-rule decision engine defined in RULES.md.
 Rules are evaluated strictly top-to-bottom; the first match wins.
 
 Persistent state
@@ -28,12 +28,17 @@ Sub-commands
   agents
       List all entries in agents.json.
 
+Actions for decide
+------------------
+  view_order | place_order | return | refund
+  (place_order and refund require a positive amount in Rs)
+
 Examples
 --------
   python gatekeeper.py register cust_01 agent_A
   python gatekeeper.py decide   cust_01 agent_A view_order
+  python gatekeeper.py decide   cust_01 agent_A place_order 1500
   python gatekeeper.py decide   cust_01 agent_A place_order 3000
-  python gatekeeper.py decide   cust_01 agent_A place_order 7000
   python gatekeeper.py decide   cust_01 agent_A return
   python gatekeeper.py decide   cust_01 agent_A refund 4999
   python gatekeeper.py revoke   cust_01 agent_A
@@ -49,13 +54,12 @@ import os
 import sys
 from datetime import datetime
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# ── Configuration ──────────────────────────────────────────────────────────────
 
 ENROLMENT = "PGD202564619"
 
-# Rule 6 / 7 threshold.
-# Nykaa's average order is ~Rs 2,000; Rs 5,000 ≈ 2.5× a normal basket.
-# Orders / refunds above this ask the customer; at or below, the agent acts.
+# Rule 6 / 7 threshold (see RULES.md): place_order and refund up to Rs 5,000
+# are ALLOWED autonomously; above Rs 5,000 the customer must confirm.
 LIMIT = 5_000  # Rs
 
 # Valid actions recognised by the gatekeeper
@@ -65,16 +69,23 @@ VALID_ACTIONS = {"view_order", "place_order", "return", "refund"}
 AMOUNT_REQUIRED = {"place_order", "refund"}
 
 # File paths (same directory as this script)
-_HERE         = os.path.dirname(os.path.abspath(__file__))
-AGENTS_FILE   = os.path.join(_HERE, "agents.json")
-AUDIT_FILE    = os.path.join(_HERE, "audit_log.csv")
+_HERE       = os.path.dirname(os.path.abspath(__file__))
+AGENTS_FILE = os.path.join(_HERE, "agents.json")
+AUDIT_FILE  = os.path.join(_HERE, "audit_log.csv")
 
 # CSV column order for the audit log
 _AUDIT_COLS = ["timestamp", "customer", "agent", "action",
                "amount", "decision", "rule"]
 
+# Simulated product eligibility data (no real Nykaa systems are used)
+_RETURNABLE_PRODUCTS = {"lipstick", "foundation", "moisturiser", "serum"}
+_RETURN_POLICY_DAYS  = 15   # simulated: returns accepted within 15 days
 
-# ── Agent Registry (agents.json) ──────────────────────────────────────────────
+# Simulated refund policy (no real Nykaa systems are used)
+_REFUND_POLICY_DAYS  = 30   # simulated: refunds accepted within 30 days
+
+
+# ── Agent Registry (agents.json) ───────────────────────────────────────────────
 
 def _load_agents() -> dict:
     """Return the full agents registry dict, or {} if the file doesn't exist."""
@@ -157,7 +168,7 @@ def _lookup_agent_status(customer: str, agent: str) -> str:
     return registry[key]["status"]   # 'enrolled' or 'revoked'
 
 
-# ── Audit Log (audit_log.csv) ─────────────────────────────────────────────────
+# ── Audit Log (audit_log.csv) ──────────────────────────────────────────────────
 
 def _append_audit(customer: str, agent: str, action: str,
                   amount: float, decision: str, rule: int) -> None:
@@ -248,103 +259,106 @@ def cmd_agents() -> None:
     print(f"\n  {len(rows)} agent(s) in {AGENTS_FILE}")
 
 
-# ── Decision Engine ───────────────────────────────────────────────────────────
+# ── Decision Engine ────────────────────────────────────────────────────────────
 
 def decide(agent_status: str, action: str, amount: float = 0) -> dict:
     """
-    Evaluate one agent request against the 7 gatekeeper rules (in order).
-    The caller passes the status string looked up from agents.json.
+    Evaluate one agent request against the 7 gatekeeper rules (RULES.md).
+    Rules are checked top to bottom; the first rule that matches decides.
+
+      1. Bad request (unknown action, or order/refund with missing/zero amount) -> BLOCK
+      2. Agent was never registered by this customer                            -> BLOCK
+      3. Agent has been revoked (even for harmless actions)                     -> BLOCK
+      4. view_order                                                             -> ALLOW
+      5. return                                                                 -> ASK CUSTOMER
+      6. place_order or refund above Rs LIMIT                                   -> ASK CUSTOMER
+      7. place_order or refund up to Rs LIMIT                                   -> ALLOW
 
     Parameters
     ----------
-    agent_status : 'enrolled' | 'revoked' | 'unregistered'
+    agent_status : 'enrolled' | 'revoked' | 'unregistered' (or any unknown str)
     action       : 'view_order' | 'place_order' | 'return' | 'refund'
     amount       : Rs value; required (> 0) for place_order and refund
 
     Returns
     -------
-    dict  –  {decision: str, rule: int, reason: str}
+    dict  -  {decision: str, rule: int, reason: str}
     """
 
-    # ── Rule 1 ────────────────────────────────────────────────────────────────
-    # A request is "bad" when the action is not recognised at all, OR when the
-    # action requires an amount but none (or zero) was provided.
+    # -- Rule 1: bad request ------------------------------------------------
     if action not in VALID_ACTIONS or (action in AMOUNT_REQUIRED and amount <= 0):
         return {
             "decision": "BLOCK",
             "rule": 1,
             "reason": (
-                f"Bad request – action '{action}' is unknown or amount is "
+                f"Bad request - action '{action}' is unknown or amount is "
                 "missing / zero for an action that requires it."
             ),
         }
 
-    # ── Rule 2 ────────────────────────────────────────────────────────────────
-    # The agent must have been explicitly registered by this customer.
-    # 'unregistered' means no entry exists in agents.json for this pair.
-    if agent_status == "unregistered":
+    # -- Rule 2: never registered -------------------------------------------
+    if agent_status not in ("enrolled", "revoked"):
         return {
             "decision": "BLOCK",
             "rule": 2,
-            "reason": "Agent was never registered by this customer.",
+            "reason": "Unknown agent - agent was never registered by this customer.",
         }
 
-    # ── Rule 3 ────────────────────────────────────────────────────────────────
-    # A revoked agent loses ALL access, even for harmless read-only actions.
+    # -- Rule 3: revoked ----------------------------------------------------
     if agent_status == "revoked":
         return {
             "decision": "BLOCK",
             "rule": 3,
-            "reason": "Agent has been revoked – access denied for all actions.",
+            "reason": (
+                "Agent has been revoked - access denied for all actions, "
+                "even harmless ones, until the customer re-registers it."
+            ),
         }
 
-    # From this point the agent is confirmed 'enrolled'.
+    # From here the agent is confirmed 'enrolled'.
 
-    # ── Rule 4 ────────────────────────────────────────────────────────────────
-    # Viewing an order is purely informational; no money moves, so it is always
-    # safe to allow without asking the customer.
+    # -- Rule 4: view order -------------------------------------------------
     if action == "view_order":
         return {
             "decision": "ALLOW",
             "rule": 4,
-            "reason": "Viewing an order is a safe, read-only action – allowed.",
+            "reason": "Registered agents may view orders - safe read-only action.",
         }
 
-    # ── Rule 5 ────────────────────────────────────────────────────────────────
-    # A return involves physically shipping goods back and can be complicated to
-    # reverse, so the customer must always confirm it explicitly.
+    # -- Rule 5: return -----------------------------------------------------
     if action == "return":
         return {
             "decision": "ASK CUSTOMER",
             "rule": 5,
-            "reason": "Returns require explicit customer confirmation.",
+            "reason": (
+                f"Return (simulated {_RETURN_POLICY_DAYS}-day policy) - "
+                "customer confirmation required."
+            ),
         }
 
-    # ── Rules 6 & 7 ───────────────────────────────────────────────────────────
-    # Only 'place_order' and 'refund' reach here (Rule 1 blocked everything
-    # else).
-    #
-    # Rule 6 – Amount exceeds the Rs 5,000 limit → escalate to customer.
-    # Rule 7 – Amount is within the limit → agent may act autonomously.
+    # -- Rule 6: place_order / refund above the limit -----------------------
     if amount > LIMIT:
         return {
             "decision": "ASK CUSTOMER",
             "rule": 6,
             "reason": (
-                f"Amount Rs {amount:,.0f} exceeds the Rs {LIMIT:,} limit "
-                "– customer confirmation required."
-            ),
-        }
-    else:
-        return {
-            "decision": "ALLOW",
-            "rule": 7,
-            "reason": (
-                f"Amount Rs {amount:,.0f} is within the Rs {LIMIT:,} limit "
-                "– allowed autonomously."
+                f"{action} of Rs {amount:,.0f} exceeds the Rs {LIMIT:,} "
+                "limit - customer confirmation required."
             ),
         }
 
+    # -- Rule 7: place_order / refund up to the limit -----------------------
+    return {
+        "decision": "ALLOW",
+        "rule": 7,
+        "reason": (
+            f"{action} of Rs {amount:,.0f} is within the Rs {LIMIT:,} "
+            "limit - allowed."
+        ),
+    }
+
+
+# ── Command-Line Interface ─────────────────────────────────────────────────────
 
 def cmd_decide(customer: str, agent: str, action: str, amount: float) -> None:
     """
@@ -356,11 +370,11 @@ def cmd_decide(customer: str, agent: str, action: str, amount: float) -> None:
 
     result = decide(agent_status, action, amount)
 
-    # ── Persist to audit log ──────────────────────────────────────────────────
+    # Persist to audit log
     _append_audit(customer, agent, action, amount,
                   result["decision"], result["rule"])
 
-    # ── Print result ──────────────────────────────────────────────────────────
+    # Print result
     print(f"\n  Customer     : {customer}")
     print(f"  Agent        : {agent}  [{agent_status}]")
     print(f"  Action       : {action}")
@@ -390,7 +404,9 @@ def _banner() -> None:
 
 def _usage_and_exit() -> None:
     print(
-        "\nSub-commands:\n"
+        "\nUsage:\n"
+        "  python gatekeeper.py <sub-command> [args]\n\n"
+        "Sub-commands:\n"
         "  register <customer> <agent>\n"
         "  revoke   <customer> <agent>\n"
         "  decide   <customer> <agent> <action> [amount]\n"
@@ -402,8 +418,8 @@ def _usage_and_exit() -> None:
         "Examples:\n"
         "  python gatekeeper.py register cust_01 agent_A\n"
         "  python gatekeeper.py decide   cust_01 agent_A view_order\n"
+        "  python gatekeeper.py decide   cust_01 agent_A place_order 1500\n"
         "  python gatekeeper.py decide   cust_01 agent_A place_order 3000\n"
-        "  python gatekeeper.py decide   cust_01 agent_A place_order 7000\n"
         "  python gatekeeper.py decide   cust_01 agent_A return\n"
         "  python gatekeeper.py decide   cust_01 agent_A refund 4999\n"
         "  python gatekeeper.py revoke   cust_01 agent_A\n"
@@ -453,6 +469,9 @@ def main() -> None:
         if len(args) >= 5:
             try:
                 amount = float(args[4])
+                if amount < 0:
+                    print(f"  [ERROR] Amount must be a positive number, got: '{args[4]}'")
+                    sys.exit(1)
             except ValueError:
                 print(f"  [ERROR] Amount must be a number, got: '{args[4]}'")
                 sys.exit(1)
